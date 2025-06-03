@@ -39,56 +39,75 @@ def grid_sample(image, optical):
         ix_se = IW - 1 - (IW - 1 - ix_se.abs()).abs()
         iy_se = IH - 1 - (IH - 1 - iy_se.abs()).abs()
 
-    image = image.view(N, C, IH * IW)
+    image = image.reshape(N, C, IH * IW)
 
     nw_val = torch.gather(
-        image, 2, (iy_nw * IW + ix_nw).long().view(N, 1, H * W).repeat(1, C, 1)
+        image, 2, (iy_nw * IW + ix_nw).long().reshape(N, 1, H * W).repeat(1, C, 1)
     )
     ne_val = torch.gather(
-        image, 2, (iy_ne * IW + ix_ne).long().view(N, 1, H * W).repeat(1, C, 1)
+        image, 2, (iy_ne * IW + ix_ne).long().reshape(N, 1, H * W).repeat(1, C, 1)
     )
     sw_val = torch.gather(
-        image, 2, (iy_sw * IW + ix_sw).long().view(N, 1, H * W).repeat(1, C, 1)
+        image, 2, (iy_sw * IW + ix_sw).long().reshape(N, 1, H * W).repeat(1, C, 1)
     )
     se_val = torch.gather(
-        image, 2, (iy_se * IW + ix_se).long().view(N, 1, H * W).repeat(1, C, 1)
+        image, 2, (iy_se * IW + ix_se).long().reshape(N, 1, H * W).repeat(1, C, 1)
     )
 
     out_val = (
-        nw_val.view(N, C, H, W) * nw.view(N, 1, H, W)
-        + ne_val.view(N, C, H, W) * ne.view(N, 1, H, W)
-        + sw_val.view(N, C, H, W) * sw.view(N, 1, H, W)
-        + se_val.view(N, C, H, W) * se.view(N, 1, H, W)
+        nw_val.reshape(N, C, H, W) * nw.reshape(N, 1, H, W)
+        + ne_val.reshape(N, C, H, W) * ne.reshape(N, 1, H, W)
+        + sw_val.reshape(N, C, H, W) * sw.reshape(N, 1, H, W)
+        + se_val.reshape(N, C, H, W) * se.reshape(N, 1, H, W)
     )
 
     return out_val
 
+
 def img_like(img_shape):
-    bchw = len(img_shape) == 4 and img_shape[-2:] != (1, 1)
-    is_square = int(int(np.sqrt(img_shape[1])) + 0.5) ** 2 == img_shape[1]
-    is_one_off_square = int(int(np.sqrt(img_shape[1])) + 0.5) ** 2 == img_shape[1] - 1
-    is_two_off_square = int(int(np.sqrt(img_shape[1])) + 0.5) ** 2 == img_shape[1] - 2
-    bnc = (
-        len(img_shape) == 3
-        and img_shape[1] != 1
-        and (is_square or is_one_off_square or is_two_off_square)
-    )
-    return bchw or bnc
+    if len(img_shape) == 4 and img_shape[2] != 1 and img_shape[3] != 1:
+        return True
 
-def num_tokens(img_shape):
-    if len(img_shape) == 4 and img_shape[-2:] != (1, 1):
-        return 0
-    is_one_off_square = int(int(np.sqrt(img_shape[1])) + 0.5) ** 2 == img_shape[1] - 1
-    is_two_off_square = int(int(np.sqrt(img_shape[1])) + 0.5) ** 2 == img_shape[1] - 2
-    return int(is_one_off_square * 1 or is_two_off_square * 2)
+    elif len(img_shape) == 3 and img_shape[1] != 1:
+        return True
+        
+    else:
+        return False
 
 
-def bnc2bchw(bnc, num_tokens):
-    b, n, c = bnc.shape
-    h = w = int(np.sqrt(n))
-    extra = bnc[:, :num_tokens, :]
+def count_tokens(img_shape):
+    # no cls token　
+    if len(img_shape) == 4 and img_shape[-2:] != (1, 1): return 0
+
+    # cls token
+    elif len(img_shape) == 3:
+        # no cls token
+        if np.sqrt(img_shape[1]).is_integer():  return 0
+        # one cls token
+        elif np.sqrt(img_shape[1] - 1).is_integer():  return 1 
+        # two cls tokens
+        elif np.sqrt(img_shape[1] - 2).is_integer(): return 2
+
+    # error
+    else: raise ValueError(f'Unsupported img_shape argument received: {img_shape}.')
+
+
+def bnc2bchw(bnc, hw, num_tokens):
+    # seperate an image part from cls tokens
+    tokens = bnc[:, :num_tokens, :]
     img = bnc[:, num_tokens:, :]
-    return img.reshape(b, h, w, c).permute(0, 3, 1, 2), extra
+
+    # reshape config
+    b, n, c = bnc.shape
+    if hw is not None:
+        try:
+            h, w = hw
+        except:
+            raise ValueError(f'hw argument must be a tupple of two integers')
+    else:
+        h = w = int(np.sqrt(n-num_tokens))
+    
+    return img.reshape(b, h, w, c).permute(0, 3, 1, 2), tokens
 
 
 def bchw2bnc(bchw, tokens):
@@ -98,49 +117,75 @@ def bchw2bnc(bchw, tokens):
     return torch.cat([tokens, bnc], dim=1)  # assumes tokens are at the start
 
 
-def affine_transform(affineMatrices, img):
-    assert img_like(img.shape)
+def affine_transform(affineMatrices, img, **kwargs):
+    assert img_like(img.shape), f'img argument must be imagelike, \n\
+    1. len(img_shape) == 4 and img_shape[-2:] != (1, 1), \n\
+    2. len(img_shape) == 3 and img_shape[1] != 1. \n\
+    Actual: {img.shape}'
+
+    # unpack kwargs
+    hw = kwargs['hw'] if 'hw' in kwargs.keys() else None
+    num_tokens = kwargs['num_tokens'] if 'num_tokens' in kwargs.keys() else None
+    
     if len(img.shape) == 3:
-        ntokens = num_tokens(img.shape)
-        x, extra = bnc2bchw(img, ntokens)
+        if num_tokens is None: 
+            num_tokens = count_tokens(img.shape)
+
+        assert (hw is not None) or (num_tokens is not None), f'Can not reshape data for transformation.'
+        x, tokens = bnc2bchw(img, hw, num_tokens)
+        
     else:
         x = img
+        
     flowgrid = F.affine_grid(
         affineMatrices, size=x.size(), align_corners=True
     )  # .double()
     # uses manual grid sample implementation to be able to compute 2nd derivatives
     # img_out = F.grid_sample(img, flowgrid,padding_mode="reflection",align_corners=True)
     transformed = grid_sample(x, flowgrid)
+    
     if len(img.shape) == 3:
-        transformed = bchw2bnc(transformed, extra)
+        transformed = bchw2bnc(transformed, tokens)
+        
     return transformed
 
 
-def translate(img, t, axis="x"):
+def translate(img, t, axis="x", **kwargs):
     """Translates an image by a fraction of the size (sx,sy) in (0,1)"""
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+    batch_size = img.shape[0]
+    device = img.device
+
+    # create Matrices for translation
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     affineMatrices[:, 0, 0] = 1
     affineMatrices[:, 1, 1] = 1
     if axis == "x":
         affineMatrices[:, 0, 2] = t
     else:
         affineMatrices[:, 1, 2] = t
-    return affine_transform(affineMatrices, img)
+        
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
-def rotate(img, angle):
+def rotate(img, angle, **kwargs):
     """Rotates an image by angle"""
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+    batch_size = img.shape[0]
+    device = img.device
+    
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     affineMatrices[:, 0, 0] = torch.cos(angle)
     affineMatrices[:, 0, 1] = torch.sin(angle)
     affineMatrices[:, 1, 0] = -torch.sin(angle)
     affineMatrices[:, 1, 1] = torch.cos(angle)
-    return affine_transform(affineMatrices, img)
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
-def shear(img, t, axis="x"):
+def shear(img, t, axis="x", **kwargs):
     """Shear an image by an amount t"""
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+    batch_size = img.shape[0]
+    device = img.device
+    
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     affineMatrices[:, 0, 0] = 1
     affineMatrices[:, 1, 1] = 1
     if axis == "x":
@@ -149,33 +194,42 @@ def shear(img, t, axis="x"):
     else:
         affineMatrices[:, 0, 1] = 0
         affineMatrices[:, 1, 0] = t
-    return affine_transform(affineMatrices, img)
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
-def stretch(img, x, axis="x"):
+def stretch(img, x, axis="x", **kwargs):
     """Stretch an image by an amount t"""
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+    batch_size = img.shape[0]
+    device = img.device
+    
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     if axis == "x":
         affineMatrices[:, 0, 0] = 1 * (1 + x)
     else:
         affineMatrices[:, 1, 1] = 1 * (1 + x)
-    return affine_transform(affineMatrices, img)
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
-def hyperbolic_rotate(img, angle):
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+def hyperbolic_rotate(img, angle, **kwargs):
+    batch_size = img.shape[0]
+    device = img.device
+    
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     affineMatrices[:, 0, 0] = torch.cosh(angle)
     affineMatrices[:, 0, 1] = torch.sinh(angle)
     affineMatrices[:, 1, 0] = torch.sinh(angle)
     affineMatrices[:, 1, 1] = torch.cosh(angle)
-    return affine_transform(affineMatrices, img)
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
-def scale(img, s):
-    affineMatrices = torch.zeros(img.shape[0], 2, 3).to(img.device)
+def scale(img, s, **kwargs):
+    batch_size = img.shape[0]
+    device = img.device
+    
+    affineMatrices = torch.zeros(batch_size, 2, 3).to(device)
     affineMatrices[:, 0, 0] = 1 - s
     affineMatrices[:, 1, 1] = 1 - s
-    return affine_transform(affineMatrices, img)
+    return affine_transform(affineMatrices, img, **kwargs)
 
 
 def saturate(img, t):

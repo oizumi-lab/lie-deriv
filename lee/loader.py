@@ -9,11 +9,12 @@ import torch.utils.data
 import numpy as np
 
 import sys
-sys.path.append("pytorch-image-models")
+sys.path.append("../pytorch-image-models")
 from timm.data import create_dataset, resolve_data_config
 from timm.data.transforms_factory import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data.distributed_sampler import OrderedDistributedSampler
+
 
 def _worker_init(worker_id, worker_seeding='all'):
     worker_info = torch.utils.data.get_worker_info()

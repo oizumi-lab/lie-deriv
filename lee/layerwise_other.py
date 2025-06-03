@@ -8,8 +8,8 @@ import torch
 import torch.nn.functional as F
 
 import sys
-sys.path.append("stylegan3")
-from metrics.equivariance import (
+sys.path.append("../stylegan3")
+from stylegan3.metrics.equivariance import (
     apply_integer_translation,
     apply_fractional_translation,
     apply_fractional_rotation,
