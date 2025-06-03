@@ -1,33 +1,45 @@
+import copy
 import torch
 from .transforms import *
+from functools import partial
 
 def jvp(f, x, u):
     """Jacobian vector product Df(x)u vs typical autograd VJP vTDF(x).
     Uses two backwards passes: computes (vTDF(x))u and then derivative wrt to v to get DF(x)u"""
     with torch.enable_grad():
         y = f(x)
-        v = torch.ones_like(
-            y, requires_grad=True
-        )  # Dummy variable (could take any value)
+
+        # Dummy variable (could take any value)
+        v = torch.ones_like(y, requires_grad=True)
         vJ = torch.autograd.grad(y, [x], [v], create_graph=True)
         Ju = torch.autograd.grad(vJ, [v], [u], create_graph=True)
+        
         return Ju[0]
 
 
-def translation_lie_deriv(model, inp_imgs, axis="x"):
+def translation_lie_deriv(model, inp_imgs, out_imgs, inp_options=None, axis="x", **kwargs):
     """Lie derivative of model with respect to translation vector, output can be a scalar or an image"""
-    # vector = vector.to(inp_imgs.device)
+    
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
+
 
     def shifted_model(t):
         # print("Input shape",inp_imgs.shape)
-        shifted_img = translate(inp_imgs, t, axis)
-        z = model(shifted_img)
+        shifted_img = translate(inp_imgs, t, axis, **kwargs)
+
+        if inp_options is not None:
+            z = model(shifted_img, inp_options)
+        else:
+            z = model(shifted_img)
+        
         # print("Output shape",z.shape)
         # if model produces an output image, shift it back
-        if img_like(z.shape):
-            z = translate(z, -t, axis)
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = translate(z, -t, axis, **kwargs)
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = translate(z[0], -t, axis, **kwargs)
+            
         # print('zshape',z.shape)
         return z
 
@@ -36,19 +48,29 @@ def translation_lie_deriv(model, inp_imgs, axis="x"):
     # print('Liederiv shape',lie_deriv.shape)
     # print(model.__class__.__name__)
     # print('')
+    
     return lie_deriv
 
 
-def rotation_lie_deriv(model, inp_imgs):
+def rotation_lie_deriv(model, inp_imgs, out_imgs, inp_options=None, **kwargs):
     """Lie derivative of model with respect to rotation, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def rotated_model(t):
-        rotated_img = rotate(inp_imgs, t)
-        z = model(rotated_img)
-        if img_like(z.shape):
-            z = rotate(z, -t)
+        rotated_img = rotate(inp_imgs, t, **kwargs)
+
+        if inp_options is not None:
+            z = model(rotated_img, inp_options)
+        else:
+            z = model(rotated_img)
+            
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = rotate(z, -t, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = rotate(z, -t, **kwargs)
+        
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
@@ -56,16 +78,25 @@ def rotation_lie_deriv(model, inp_imgs):
     return lie_deriv
 
 
-def hyperbolic_rotation_lie_deriv(model, inp_imgs):
+def hyperbolic_rotation_lie_deriv(model, inp_imgs, out_imgs, inp_options=None, **kwargs):
     """Lie derivative of model with respect to rotation, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def rotated_model(t):
-        rotated_img = hyperbolic_rotate(inp_imgs, t)
-        z = model(rotated_img)
-        if img_like(z.shape):
-            z = hyperbolic_rotate(z, -t)
+        rotated_img = hyperbolic_rotate(inp_imgs, t, **kwargs)
+
+        if inp_options is not None:
+            z = model(rotated_img, inp_options)
+        else:
+            z = model(rotated_img)
+
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = hyperbolic_rotate(z, -t, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = hyperbolic_rotate(z, -t, **kwargs)
+        
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
@@ -73,16 +104,28 @@ def hyperbolic_rotation_lie_deriv(model, inp_imgs):
     return lie_deriv
 
 
-def scale_lie_deriv(model, inp_imgs):
+def scale_lie_deriv(model, inp_imgs, out_imgs, inp_options=None, **kwargs):
     """Lie derivative of model with respect to rotation, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def scaled_model(t):
-        scaled_img = scale(inp_imgs, t)
-        z = model(scaled_img)
+        scaled_img = scale(inp_imgs, t, **kwargs)
+
+        if inp_options is not None:
+            z = model(scaled_img, inp_options)
+        else:
+            z = model(scaled_img)
+
         if img_like(z.shape):
-            z = scale(z, -t)
+            z = scale(z, -t, **kwargs)
+
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = scale(z, -t, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = scale(z, -t, **kwargs)
+        
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
@@ -90,16 +133,26 @@ def scale_lie_deriv(model, inp_imgs):
     return lie_deriv
 
 
-def shear_lie_deriv(model, inp_imgs, axis="x"):
+def shear_lie_deriv(model, inp_imgs, out_imgs, inp_options=None, axis="x", **kwargs):
     """Lie derivative of model with respect to shear, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def sheared_model(t):
-        sheared_img = shear(inp_imgs, t, axis)
-        z = model(sheared_img)
-        if img_like(z.shape):
-            z = shear(z, -t, axis)
+        sheared_img = shear(inp_imgs, t, axis, **kwargs)
+
+        if inp_options is not None:
+            z = model(sheared_img, inp_options)
+        else:
+            z = model(sheared_img)
+
+
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = shear(z, -t, axis, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = shear(z, -t, axis, **kwargs)
+        
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
@@ -107,16 +160,21 @@ def shear_lie_deriv(model, inp_imgs, axis="x"):
     return lie_deriv
 
 
-def stretch_lie_deriv(model, inp_imgs, axis="x"):
+def stretch_lie_deriv(model, inp_imgs, out_imgs, axis="x", **kwargs):
     """Lie derivative of model with respect to stretch, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def stretched_model(t):
-        stretched_img = stretch(inp_imgs, t, axis)
+        stretched_img = stretch(inp_imgs, t, axis, **kwargs)
         z = model(stretched_img)
-        if img_like(z.shape):
-            z = stretch(z, -t, axis)
+
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = stretch(z, -t, axis, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = stretch(z, -t, axis, **kwargs)
+        
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
@@ -124,16 +182,21 @@ def stretch_lie_deriv(model, inp_imgs, axis="x"):
     return lie_deriv
 
 
-def saturate_lie_deriv(model, inp_imgs):
+def saturate_lie_deriv(model, inp_imgs, out_imgs, **kwargs):
     """Lie derivative of model with respect to saturation, assumes scalar output"""
     if not img_like(inp_imgs.shape):
-        return 0.0
+        return torch.zeros_like(out_imgs)
 
     def saturated_model(t):
-        saturated_img = saturate(inp_imgs, t)
+        saturated_img = saturate(inp_imgs, t, **kwargs)
         z = model(saturated_img)
-        if img_like(z.shape):
-            z = saturate(z, -t)
+
+        if hasattr(z, 'shape') and img_like(z.shape):
+            z = saturate(z, -t, **kwargs)
+            
+        if not hasattr(z, 'shape') and img_like(z[0].shape):
+            z = saturate(z, -t, **kwargs)
+            
         return z
 
     t = torch.zeros(1, requires_grad=True, device=inp_imgs.device)
