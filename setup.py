@@ -1,5 +1,3 @@
-# setup.py （lie-deriv プロジェクトルートに置く）
-
 from setuptools import setup, find_packages
 
 setup(
